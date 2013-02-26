@@ -28,6 +28,8 @@
 #include <linux/errno.h>
 #include <linux/proc_fs.h> 
 
+#include <linux/string.h>
+
 
 /* 
  * Module basic definitions
@@ -48,22 +50,17 @@
 #define FORMAT_LOG_ENTRY(entry) "[" THIS_NAME "] " entry "\n"
 
 
+struct log_entry
+{
+    char* data;
+    size_t length;
+    struct log_entry* next;
+};
+
+
 static char* log_data;
 static struct proc_dir_entry* proc_entry;
-
-
-/* Function pointers inside Data Structures 
-    -- let's simulate some OOP
-   
-   Sample
- */
-/* struct log {
-    // ...
-    void (*put_line)(char* line);
-    char* (*read_line)(void);
-    void (*write_line)(char* line);
-    // ...
- };*/
+// static struct log_entry* log_entry_head;
 
 
 /*
@@ -72,9 +69,33 @@ static struct proc_dir_entry* proc_entry;
 int fetch_log_data(char *buf, char **start, off_t offset, int count, int *eof, void *data)
 {
     int len = 0;
+
+    sprintf(log_data, "Summertime.\n");
     len = sprintf(buf,"%s", log_data);
 
     return len;
+}
+
+
+struct log_entry* log_entry_from_data(char* in_data)
+{
+    size_t data_length = 0;
+    struct log_entry *new_entry = NULL;
+    
+    data_length = strlen(in_data) + 1;
+
+    new_entry = (struct log_entry*)kmalloc(sizeof(struct log_entry), GFP_KERNEL);
+    if (new_entry == NULL)
+    {
+        printk(KERN_INFO FORMAT_LOG_ENTRY("Error creating new log_entry from data: failed at memory allocation."));
+        exit(-ENOMEM);
+    }
+
+    new_entry->length = data_length;
+    new_entry->next = NULL;
+    new_entry->data = (char*)kmalloc(data_length, GFP_KERNEL);
+
+    return new_entry;
 }
 
 
@@ -98,7 +119,7 @@ static int __init minos_init(void)
         return _ERROR_EXIT;
     }
 
-    proc_entry->data = (void TODO: Should "consume" the data that is returned *) &log_data;
+    proc_entry->data = (void*) &log_data;
     proc_entry->size = _LOG_SIZE;
     proc_entry->read_proc = fetch_log_data;
 
@@ -109,7 +130,12 @@ static int __init minos_init(void)
 static void __exit minos_cleanup(void)
 {
     kfree(log_data);
+    
+    /* TODO: free the log_entry elements
+     */
+
     remove_proc_entry(THIS_NAME, NULL);
+    
     printk(KERN_INFO FORMAT_LOG_ENTRY("Cleaning up module."));
 }
 
