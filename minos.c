@@ -41,7 +41,7 @@
 #define _ERROR_EXIT -1
 #define _SUCCESS_EXIT 0
 
-#define _LOG_SIZE 1600000
+#define _LOG_SIZE 160
 
 
 /* 
@@ -60,7 +60,6 @@ struct log_entry
 
 static struct proc_dir_entry* proc_entry;
 static struct log_entry* log_entry_head;
-static struct log_entry* log_entry_tail;
 static unsigned int data_length_sum = 0;
 
 /*
@@ -71,53 +70,50 @@ TODO:
 
 /*
  ** Internal Method
- * _clear_log_entries
+ * _consume_log_entries
  * 
  * Traverses all the log entries starting from log_entry_head and clears them.
- * If copy_on_clear is set to true then all data found in entries will be saved
+ * If clear_on_consume is set to true then all data found in entries will be saved
  * in the provided buf.
- */ 
-int _clear_log_entries(bool copy_on_clear, char* buf)
+ */
+int _consume_log_entries(bool clear_on_consume, char* buf)
 {
     int len = 0;
     struct log_entry* current_entry;
 
-    /* Check if the call to this function is valid
-     */
-    if (copy_on_clear == true && buf == NULL)
-    {
-        printk(KERN_INFO FORMAT_LOG_ENTRY("Error: cannot preserve the cleared "
-            "data in an unitialized buffed!"));
-        return 0;
-    }
-
-    /* Now consume
-     */
+    /* Now consume */
     current_entry = log_entry_head;
     while(current_entry != NULL)
     {
         struct log_entry* next_entry;
 
-        /* Only conserve if the copy_on_clear flag was set
-         */
-        if (copy_on_clear == true)
+        /* Only save the entries if a buf was provided */
+        if (buf != NULL)
         {
             len += sprintf(buf+len, "%s\n", current_entry->data);
         }
         
         next_entry = current_entry->next;
 
-        kfree(current_entry->data);
-        kfree(current_entry);
-        current_entry->data = NULL;
-        current_entry = NULL;
+        /* Clear entries if requested to do so */
+        if (clear_on_consume == true)
+        {
+            kfree(current_entry->data);
+            kfree(current_entry);
+            current_entry->data = NULL;
+            current_entry = NULL;
+        }
 
-        log_entry_head = current_entry = next_entry;
+        /* Advance to the next entry */
+        current_entry = next_entry;
     }
 
-    /* Reset the data length sum
-     */
-    data_length_sum = 0;
+    /* Reset the data length sum */
+    if (clear_on_consume == true)
+    {
+        log_entry_head = NULL;
+        data_length_sum = 0;        
+    }
 
     return len;
 }
@@ -169,35 +165,51 @@ struct log_entry* _log_entry_from_data(char* in_data)
  */ 
 bool _insert_log_entry(struct log_entry* new_entry)
 {
-    /* Overwrite the oldest entry? (circular buffer)
-     */
-    if (data_length_sum + new_entry->length > _LOG_SIZE)
+    struct log_entry* temp_entry = NULL; 
+
+    printk(KERN_INFO "Inserting new log entry.\n");
+
+    /* The new entry is too big! */
+    if (new_entry->length > _LOG_SIZE)
     {
-        if (log_entry_head == NULL )
-        {
-            /* The entry is too big!
-             */
-            printk(KERN_INFO FORMAT_LOG_ENTRY("New entry is too big."));
-            return false;
-        }
-        else if(log_entry_head->next == NULL)
-        {
-            kfree(log_entry_head->data);
-            kfree(log_entry_head);
-
-            log_entry_head = new_entry;
-            return true;
-        }
-        else
-        {
-            
-        }
+        printk(KERN_INFO FORMAT_LOG_ENTRY("New entry is too big."));
+        return false;
     }
-    /* Still have enough place, no need to overwrite
-     */
-    else {
 
+    /* Clear the oldest entry to make space for the new one */
+    while (data_length_sum + new_entry->length > _LOG_SIZE)
+    {
+        printk(KERN_INFO "Sum %d bigger than %d.\n", data_length_sum + new_entry->length, _LOG_SIZE);
+
+        temp_entry = log_entry_head->next;
+
+        data_length_sum -= log_entry_head->length;
+
+        kfree(log_entry_head->data);
+        kfree(log_entry_head);
+
+        log_entry_head = temp_entry;
     }
+
+    data_length_sum += new_entry->length;
+
+    /* Buffer empty; new entry will be the head */
+    if (log_entry_head == NULL)
+    {
+        printk(KERN_INFO "Head is null.");
+        log_entry_head = new_entry;
+        return true;
+    }
+
+    /* Buffer not empty; traverse and put the entry in the tail */
+    temp_entry = log_entry_head;
+    while(temp_entry->next != NULL)
+    {
+        printk(KERN_INFO "Traversing to reach the end of the list.\n");
+        temp_entry = temp_entry->next; 
+    }
+    temp_entry->next = new_entry;
+    return true;
 }
 
 
@@ -210,10 +222,14 @@ int fetch_log_data(char *buf, char **start, off_t offset, int count, int *eof,
 {
     int len = 0;
 
+    printk(KERN_INFO "Sum: %d.\n", data_length_sum);
+
     /*
      * Consume the entries and put the data in buf
      */
-    len = _clear_log_entries(true, buf);
+    len = _consume_log_entries(false, buf);
+
+    printk(KERN_INFO "----- Read served.\n");
 
     return len;
 }
@@ -229,9 +245,31 @@ int clear_log_data(struct file *file, const char __user *buffer,
     /*
      * Consume the data without conserving it 
      */
-    _clear_log_entries(false, NULL);
+    _consume_log_entries(true, NULL);
 
     return 1;
+}
+
+
+/*
+ ** EXPORTED symbol that will be called from external modules
+ *
+ */
+static void add_log_data(char* data)
+{
+    struct log_entry* new_entry = NULL;
+    bool add_status;
+
+    new_entry = _log_entry_from_data(data);
+    add_status = _insert_log_entry(new_entry);
+
+    if (add_status == true)
+    {
+        printk(KERN_INFO FORMAT_LOG_ENTRY("New entry added!"));
+    }
+    else {
+        printk(KERN_INFO FORMAT_LOG_ENTRY("Failed to add new entry!"));
+    }
 }
 
 
@@ -250,17 +288,6 @@ static int __init minos_init(void)
     proc_entry->read_proc = fetch_log_data;
     proc_entry->write_proc = clear_log_data;
 
-    /*
-     * Test data
-     */
-    struct log_entry* new_entry = _log_entry_from_data("STAPH.");
-    log_entry_head = new_entry;
-    new_entry = _log_entry_from_data("STAPH 2222222222.");
-    log_entry_head->next = new_entry;
-
-    printk("%s\n", log_entry_head->data);
-    printk("%s\n", log_entry_head->next->data);
-
     printk(KERN_INFO FORMAT_LOG_ENTRY("All good."));
 
     return _SUCCESS_EXIT;
@@ -269,7 +296,7 @@ static int __init minos_init(void)
 
 static void __exit minos_cleanup(void)
 {
-    _clear_log_entries(false, NULL);
+    _consume_log_entries(true, NULL);
 
     remove_proc_entry(THIS_NAME, NULL);
     
@@ -277,6 +304,7 @@ static void __exit minos_cleanup(void)
 }
 
 
+EXPORT_SYMBOL(add_log_data);
 
 module_init(minos_init);
 module_exit(minos_cleanup);

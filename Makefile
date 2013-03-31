@@ -1,4 +1,4 @@
-obj-m := minos.o
+obj-m := minos.o 01_export.o
 
 CMD	:= $(MAKE)
 KDIR := /lib/modules/$(shell uname -r)/build
